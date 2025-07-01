@@ -6,8 +6,10 @@ from jwt.exceptions import InvalidTokenError
 from passlib.context import CryptContext
 from fastapi import FastAPI, HTTPException, Depends,status
 from pydantic import BaseModel
-from sql import Bug, engine, Base, fake_users_db
-from models import BugInput, BugRead, User, UserInDB, Token, TokenData
+from sql import Bug, engine, Base
+from sql import User as UserModel
+from models import BugInput, BugRead, User, UserInDB, Token, TokenData,UserCreate, UserRead
+from register import get_user_by_username, create_user, authenticate_user
 from sqlalchemy.orm import sessionmaker, Session
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
@@ -44,25 +46,17 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
+def get_user_by_username(db: Session, username: str):
+    return db.query(UserModel).filter(UserModel.username == username).first()
 
-def fake_hash_password(password: str):
-    return "fakehashed" + password
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-def authenticate_user(fake_db, username: str, password: str):
-    # for production app we will use this when we include a database 
-    # user = get_user(fake_db, username)
-    # if not user:
-    #     return False
-    # if not verify_password(password, user.hashed_password):
-    #     return False
-    # return user
-    # fro testing we will using the fakehashed methode
-    user = get_user(fake_db, username)
+def authenticate_user(db: Session, username: str, password: str):
+    user = get_user_by_username(db, username)
     if not user:
         return False
-    if not user.hashed_password == fake_hash_password(password):
+    if not pwd_context.verify(password, user.hashed_password):
         return False
     return user
 
@@ -85,10 +79,6 @@ async def root():
 
 
 
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
 
 
 @app.get("/items/")
@@ -96,16 +86,14 @@ async def read_items(token: Annotated[str, Depends(oauth2_scheme)]):
     return {"token": token}
 
 
-def fake_decode_token(token):
-    user = get_user(fake_users_db, token)
-    return user
 
 
-async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)], db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invaid authentication credentials",
-            headers={"WWW-AUTHENTICATE": "Bearer"},
+            headers={"WWW-Authenticate": "Bearer"},
         )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -115,7 +103,7 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
         token_data = TokenData(username=username)
     except InvalidTokenError:
         raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
+    user = get_user_by_username(db, username=token_data.username)
     if user is None:
         raise credentials_exception
     return user
@@ -130,8 +118,10 @@ async def get_current_active_user(
 
 
 @app.post("/token")
-async def login(form_data: Annotated[OAuth2PasswordRequestForm,Depends()]) -> Token:
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+async def login(
+    form_data: Annotated[OAuth2PasswordRequestForm,Depends()],db: Session = Depends(get_db)
+    ) -> Token:
+    user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
          detail="incorrect username or password",
@@ -142,7 +132,12 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm,Depends()]) -> To
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
     return Token(access_token=access_token, token_type="bearer")
 
-
+@app.post("/register", response_model=UserRead)
+def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = get_user_by_username(db, user.username)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username Alredy Exists")
+    return create_user(db, user)
 
 @app.get("/users/me")
 async def read_users_me(
