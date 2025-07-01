@@ -13,8 +13,9 @@ class Bug(Base):
     __tablename__ = "bugs"
 
     id = Column(Integer,primary_key=True)
-    title = Column(String)
-    description = Column(String)
+    title = Column(String, index=True)
+    description = Column(String, index=True)
+    status = Column(String, default="open")
 
 fake_users_db = {
     "johndoe": {
@@ -32,5 +33,11 @@ fake_users_db = {
         "disabled": True,
     },
 }
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
 
 Base.metadata.create_all(engine)
